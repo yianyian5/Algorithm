@@ -1,0 +1,1185 @@
+======== Matlab Functions ==========
+
+% DirectSum
+function A=DirectSum(A,varargin)
+% DIRECTSUM computes the direct sum of matrices
+%   A=DirectSum(A1,A2,...,An) computes the direct sum of matrices of
+%   arbitrary size (Peter Arbenz, May 30, 1997)
+
+for k=1:length(varargin)
+  [n,m]=size(A);
+  [o,p]=size(varargin{k});
+  A=[A zeros(n,p); zeros(o,m) varargin{k}];
+end
+
+
+% Federov_General
+% m: number of mixture components
+% n: desired number of runs
+% seed: random seed
+% niter: number of iterations for the algorithm
+% This function uses Federov Exchange from Cook and Nachtsheim (1980)
+% It chooses subsets from a full design with model matrix FullM
+% This returns the MODEL MATRIX of the D-optimal design
+function [M,indices0] = Federov_General(m,n,seed,FullM)
+rng(seed);
+
+
+N = size(FullM,1); % number of rows in the full design
+singular = true;
+while singular
+    indices0 = randsample(N,n)';
+    M0 = FullM(indices0,:); % initial starting design
+    if rcond(M0'*M0) > 1e-6
+        singular = false;
+    end
+end
+det0 = det(M0'*M0);
+C0 = inv(M0'*M0);
+delta = Inf;
+%for r = 1:niter
+iter = 1;
+while (delta > 1e-4) 
+    
+    disp(iter);
+    iter = iter+1;
+    change = 1;
+    
+    for i = 1:n
+        
+        x = M0(i,:);
+        M1 = M0;
+        deltas = zeros(1,N);
+        for row = 1:N
+            if ~ismember(row,indices0)
+                y = FullM(row,:);
+                fx = x';
+                fy = y';
+                py = fy'*C0*fy;
+                px = fx'*C0*fx;
+                pxy = fx'*C0*fy;
+                deltas(row) = 1+(py-px)+(pxy^2 - py*px);
+            end
+        end
+        [deltaxy, index] = max(deltas);
+        if deltaxy > 1
+            y = FullM(index,:); % select point y
+            M1(i,:) = y; % perform the exchange
+            fx = x';
+            fy = y';
+            F1 = [fy,-fx];
+            F2 = [fy,fx];
+            % update the matrix inverse
+            C0 = C0 - (C0*F1)/(eye(2) + F2'*C0*F1)*F2'*C0;
+            det0 = det0*deltaxy; % update the determinant
+            change = change*deltaxy; % keep track of the
+            % multiplicative change in det
+            M0 = M1; % update the design
+            indices0(i) = index; %update the indices
+        end
+        
+    end
+    
+    delta = change - 1;
+    disp(delta);
+    
+end
+
+M = M0;
+end
+
+% find_emp_thresholds_v10
+% m: number of mixture components
+% n: desired number of runs
+% seed: random seed
+% niter: number of iterations for the algorithm
+% HERE the neighbors are chosen based on adjacent points in SLD
+% Each point will be taken from the FULL PWO SLD
+% nex: number of exchanges to be made per iteration
+% model: 'additive' or 'interaction' (interaction still needs work)
+% here, the thresholds are selected by approximating the underlying
+% distribution of the objective function (Winker 2001, 2020)
+% FullD: full design matrix
+% FullM: model matrix expansion for FullD
+% AD: Adjacency matrix for FullD
+% v10 update: eliminated unncessary arguments to make this function more
+% generalizable
+% ALSO moved rng(d) INTO the parfor, REMOVED SEED
+function tr = find_emp_thresholds_v10(m,n,niter,FullD,FullM,AD)
+%FullD = get_PWO_SLD(m,l); % full design
+N = size(FullD,1); % number of rows in the full design
+
+% use this for now...
+p = m + nchoosek(m,2);
+%if strcmp(model,'additive')
+%   p = m + nchoosek(m,2);
+%end
+
+% Threshold generation begins here
+tr = zeros(1,2*niter); % initialize thresholds
+parfor d = 1:2*niter  
+    rng(d);
+    indices0 = randsample(N,n);
+    %D0 = FullD(indices0,:);
+    %M0 = OofA_Mix_Model_Matrix(D0,m,model); 
+    M0 = FullM(indices0,:);
+    if rcond(M0'*M0) < 1e-06
+        % in this case, the matrix is nearly singular
+        tr(d) = Inf; % set the "threshold" to infinity
+    else
+        det0 = det(M0'*M0);
+        det1 = det0;
+        C0 = inv(M0'*M0);
+        C1 = C0;
+        k = size(M0,2);
+        row = randsample(n,1); % randomly sample 1 row
+        x = M0(row,:);
+        index = indices0(row);
+        nbrs = find(AD(index,:) == 1);
+        numnbrs = length(nbrs);
+        if(numnbrs == 1)
+            newindex = nbrs; % trivial case
+        else
+            newindex = randsample(nbrs,1); % use adj mat to find a random neighbor
+        end
+        member = 1;
+        iter = 0; % counter used to determine if we should move on
+        while member
+            
+            if ismember(newindex,indices0) % try another neighbor
+                if(numnbrs == 1) % in this case, we will have to try a new row
+                    % do nothing here, let the iter >= numnbrs condition kick
+                    % in
+                else
+                    newindex = randsample(nbrs,1); % use adj mat to find a random neighbor
+                end
+            else
+                member = 0; % exit the loop
+            end
+            
+            iter = iter + 1;
+            
+            if iter >= numnbrs % in this case, we need to try a new row
+                
+                row = randsample(n,1); % randomly sample 1 row
+                x = M0(row,:);
+                index = indices0(row);
+                nbrs = find(AD(index,:) == 1);
+                numnbrs = length(nbrs);
+                iter = 0;
+                
+                
+            end
+            
+        end
+        
+        newindex = randsample(nbrs,1); % use adj mat to find a random neighbor
+        y = FullM(newindex,:); % take the new neighbor from the model matrix for full design
+        fx = x';
+        fy = y';
+        py = fy'*C1*fy;
+        px = fx'*C1*fx;
+        pxy = fx'*C1*fy;
+        deltaxy = 1+(py-px)+(pxy^2 - py*px);
+        det1 = det1*deltaxy;
+        F1 = [fy,-fx];
+        F2 = [fy,fx];
+        A2 = eye(2) + F2'*C1*F1;
+        I2 = 1/det(A2)*[A2(2,2),-A2(1,2);-A2(2,1),A2(1,1)];
+        %C1 = C1 - (C1*F1)*I2*F2'*C1;
+        
+        % check if det1 is real...
+        if isreal(det1)
+            deff1 = 100*det1^(1/k)/n;
+            deff0 = 100*det0^(1/k)/n;
+            tr(d) = abs(deff0 - deff1);
+            %tr(d) = abs(det1-det0);
+        else
+            tr(d) = Inf;
+        end
+        
+        
+        
+    end
+    
+end
+tr = sort(tr,'descend'); % sorts in descending order
+tr = tr(niter:2*niter);
+% now take the lower 50% of the empirical thresholds
+% Threshold generation ends here
+
+end
+
+
+% find_emp_thresholds_v10b
+% m: number of mixture components
+% n: desired number of runs
+% seed: random seed
+% niter: number of iterations for the algorithm
+% HERE the neighbors are chosen based on adjacent points in SLD
+% Each point will be taken from the FULL PWO SLD
+% nex: number of exchanges to be made per iteration
+% model: 'additive' or 'interaction' (interaction still needs work)
+% here, the thresholds are selected by approximating the underlying
+% distribution of the objective function (Winker 2001, 2020)
+% FullD: full design matrix
+% FullM: model matrix expansion for FullD
+% AD: Adjacency matrix for FullD
+% v10 update: eliminated unncessary arguments to make this function more
+% generalizable
+% v10b: This version uses a regular for loop (not in parallel)
+function tr = find_emp_thresholds_v10b(m,n,seed,niter,FullD,FullM,AD)
+%FullD = get_PWO_SLD(m,l); % full design
+N = size(FullD,1); % number of rows in the full design
+
+% use this for now...
+p = m + nchoosek(m,2);
+%if strcmp(model,'additive')
+%   p = m + nchoosek(m,2);
+%end
+
+rng(seed);
+% Threshold generation begins here
+tr = zeros(1,2*niter); % initialize thresholds
+for d = 1:2*niter  
+    indices0 = randsample(N,n);
+    %D0 = FullD(indices0,:);
+    %M0 = OofA_Mix_Model_Matrix(D0,m,model); 
+    M0 = FullM(indices0,:);
+    if rcond(M0'*M0) < 1e-06
+        % in this case, the matrix is nearly singular
+        tr(d) = Inf; % set the "threshold" to infinity
+    else
+        det0 = det(M0'*M0);
+        det1 = det0;
+        C0 = inv(M0'*M0);
+        C1 = C0;
+        k = size(M0,2);
+        row = randsample(n,1); % randomly sample 1 row
+        x = M0(row,:);
+        index = indices0(row);
+        nbrs = find(AD(index,:) == 1);
+        numnbrs = length(nbrs);
+        if(numnbrs == 1)
+            newindex = nbrs; % trivial case
+        else
+            newindex = randsample(nbrs,1); % use adj mat to find a random neighbor
+        end
+        member = 1;
+        iter = 0; % counter used to determine if we should move on
+        while member
+            
+            if ismember(newindex,indices0) % try another neighbor
+                if(numnbrs == 1) % in this case, we will have to try a new row
+                    % do nothing here, let the iter >= numnbrs condition kick
+                    % in
+                else
+                    newindex = randsample(nbrs,1); % use adj mat to find a random neighbor
+                end
+            else
+                member = 0; % exit the loop
+            end
+            
+            iter = iter + 1;
+            
+            if iter >= numnbrs % in this case, we need to try a new row
+                
+                row = randsample(n,1); % randomly sample 1 row
+                x = M0(row,:);
+                index = indices0(row);
+                nbrs = find(AD(index,:) == 1);
+                numnbrs = length(nbrs);
+                iter = 0;
+                
+                
+            end
+            
+        end
+        
+        newindex = randsample(nbrs,1); % use adj mat to find a random neighbor
+        y = FullM(newindex,:); % take the new neighbor from the model matrix for full design
+        fx = x';
+        fy = y';
+        py = fy'*C1*fy;
+        px = fx'*C1*fx;
+        pxy = fx'*C1*fy;
+        deltaxy = 1+(py-px)+(pxy^2 - py*px);
+        det1 = det1*deltaxy;
+        F1 = [fy,-fx];
+        F2 = [fy,fx];
+        A2 = eye(2) + F2'*C1*F1;
+        I2 = 1/det(A2)*[A2(2,2),-A2(1,2);-A2(2,1),A2(1,1)];
+        %C1 = C1 - (C1*F1)*I2*F2'*C1;
+        
+        % check if det1 is real...
+        if isreal(det1)
+            deff1 = 100*det1^(1/k)/n;
+            deff0 = 100*det0^(1/k)/n;
+            tr(d) = abs(deff0 - deff1);
+            %tr(d) = abs(det1-det0);
+        else
+            tr(d) = Inf;
+        end
+        
+        
+        
+    end
+    
+end
+tr = sort(tr,'descend'); % sorts in descending order
+tr = tr(niter:2*niter);
+% now take the lower 50% of the empirical thresholds
+%disp(tr(1:100));
+%tr = tr(ceil(0.40*2*niter):2*niter);
+% Threshold generation ends here
+
+end
+
+
+% get_adjacency_matrix
+% DF: a full PWO SLD
+% m: the number of mixture components
+% l: the degree of the SLD
+% returns an adjacency matrix for the neighbors
+function nhbrs = get_adjacency_matrix(DF,m,l)
+
+N = size(DF,1); % number of rows in full design
+q = size(DF,2); % number of columns in full design
+nhbrs = zeros(N,N);
+equaldist = norm(DF(1,1:m) - DF(m+1,1:m)); % these two points should be lattice nbrs
+for row = 1:N
+    x = DF(row,1:m);
+    z = DF(row,(m+1):q);
+    for i = 1:N
+        
+        x1 = DF(i,1:m);
+        z1 = DF(i,(m+1):q);
+        dist = norm(x-x1);
+        diff = 0;
+        for j = 1:length(z)
+            if (z(j) ~= 0) && (z1(j) ~= 0)
+                if z(j) ~= z1(j)
+                    diff = diff+1;
+                end
+            end
+            
+            
+        end
+        
+        
+        if xor((dist == equaldist),(diff == 1))
+            nhbrs(row,i) = 1;
+        end
+        
+        
+    end
+    
+    
+    
+end
+
+
+
+end
+
+% get_adjacency_matrix_epsilon_v3
+% DF: a full design
+% m: the number of mixture components
+% epsilon: maximum distance for neighbors
+% returns an adjacency matrix for the neighbors
+% v3 update: clearer neighborhood structure, requires epsilon as run
+% argument
+function nhbrs= get_adjacency_matrix_epsilon_v3(DF,m,epsilon)
+
+N = size(DF,1); % number of rows in full design
+q = size(DF,2); % number of columns in full design
+%distmat = get_distances(DF(:,1:m));
+%epsilon = quantile(distmat(:),0.5);
+nhbrs = zeros(N,N);
+
+for row = 1:N
+    x = DF(row,1:m);
+    z = DF(row,(m+1):q);
+    for i = 1:N
+    
+        x1 = DF(i,1:m);
+        z1 = DF(i,(m+1):q);
+        dist = norm(x-x1);
+        diff = sum(z~=z1);
+        % A: only mixture is changed
+        if (dist <= epsilon) && (diff == 0)
+           nhbrs(row,i) = 1; 
+        end
+        % B: only order is changed
+        if (dist==0) && (diff == 1)
+           nhbrs(row,i) = 1; 
+        end
+
+        
+    end
+
+    
+    
+end
+
+
+
+end
+
+% get_distances
+% DF: some design
+% finds the matrix of all pairwise distances
+function distances = get_distances(DF)
+
+N = size(DF,1); % number of rows in full design
+
+distances = zeros(N,N);
+for row = 1:N
+    x = DF(row,:);
+    for i = 1:N
+        x1 = DF(i,:);
+        distances(row,i) = norm(x-x1);        
+    end
+
+    
+    
+end
+
+
+
+end
+
+
+% get_PWO_SLD
+% m: number of mixture components
+% l: degree of the SLD
+% this function returns the full design matrix for a OofA SLD (PWO SLD)
+function D = get_PWO_SLD(m,l)
+    SD = get_SLD(m,l);
+    R = get_R(SD);
+    X = R*SD;
+    Z = get_Z(SD);
+    D = [X,Z];
+end
+
+
+
+
+% get_R
+% generates the replicate matrix R for a standard order SLD
+% this function is a helper function for get_PWO_SLD
+% X is a standard order SLD(m,l) design produced by get_SLD(m,l)
+function R = get_R(X)
+    n = size(X,1); % number of rows for SLD
+    m = size(X,2); % number of mixture components
+    nonzero = sum(X~=0,2); % number of nonzero elements in each row
+    nreps = factorial(nonzero); % vector of replicates
+    N = sum(nreps); % number of rows in PWO SLD design
+    %R = zeros(N,n); % initialize R
+    R = ones(nreps(1),1);
+    for k = 2:n
+        R = DirectSum(R,ones(nreps(k),1));
+    end
+end
+
+
+% get_SLD
+% m: number of mixture components
+% l: degree of the SLD
+% this function returns a matrix X1 that is the (m,l) simplex lattice design
+% thus function supports m = 2,3,4,...,12
+% X1 will be returned in "standard order" (vertices first, then binary
+% blends, the ternary, etc...)
+function X1 = get_SLD(m,l)
+    N = nchoosek(m+l-1,l); % determine the number of rows in the SLD
+    X = zeros(N,m); % initialize the SLD
+    %X(1:m,1:m) = diag(ones(m,1)); % the first m rows are vertex points
+    fracs = (0:l)/l;
+    if m == 2
+        [X1,X2] = ndgrid(fracs,fracs);
+        X = [X1(:),X2(:)];
+    end 
+    if m == 3
+        [X1,X2,X3] = ndgrid(fracs,fracs,fracs);
+        X = [X1(:), X2(:),X3(:)];
+    end 
+    if m == 4
+        [X1,X2,X3,X4] = ndgrid(fracs,fracs,fracs,fracs);
+        X = [X1(:), X2(:),X3(:),X4(:)];
+    end 
+    if m == 5
+        [X1,X2,X3,X4,X5] = ndgrid(fracs,fracs,fracs,fracs,fracs);
+        X = [X1(:), X2(:),X3(:),X4(:),X5(:)];
+    end 
+    if m == 6
+        [X1,X2,X3,X4,X5,X6] = ndgrid(fracs,fracs,fracs,fracs,fracs,fracs);
+        X = [X1(:), X2(:),X3(:),X4(:),X5(:),X6(:)];
+    end
+    if m == 7
+        [X1,X2,X3,X4,X5,X6,X7] = ndgrid(fracs,fracs,fracs,fracs,fracs,...
+        fracs,fracs);
+        X = [X1(:), X2(:),X3(:),X4(:),X5(:),X6(:),X7(:)];
+    end
+    if m == 8
+        [X1,X2,X3,X4,X5,X6,X7,X8] = ndgrid(fracs,fracs,fracs,fracs,...
+        fracs,fracs,fracs,fracs);
+        X = [X1(:), X2(:),X3(:),X4(:),X5(:),X6(:),X7(:),X8(:)];
+    end
+    if m == 9
+        [X1,X2,X3,X4,X5,X6,X7,X8,X9] = ndgrid(fracs,fracs,fracs,fracs,...
+        fracs,fracs,fracs,fracs,fracs);
+        X = [X1(:), X2(:),X3(:),X4(:),X5(:),X6(:),X7(:),X8(:),X9(:)];
+    end
+    if m == 10
+        [X1,X2,X3,X4,X5,X6,X7,X8,X9,X10] = ndgrid(fracs,fracs,fracs,...
+        fracs,fracs,fracs,fracs,fracs,fracs,fracs);
+        X = [X1(:), X2(:),X3(:),X4(:),X5(:),X6(:),X7(:),...
+            X8(:),X9(:),X10(:)];
+    end
+    if m == 11
+        [X1,X2,X3,X4,X5,X6,X7,X8,X9,X10,X11] = ndgrid(fracs,fracs,fracs,...
+        fracs,fracs,fracs,fracs,fracs,fracs,fracs,fracs);
+        X = [X1(:), X2(:),X3(:),X4(:),X5(:),X6(:),X7(:),...
+            X8(:),X9(:),X10(:),X11(:)];
+    end
+    if m == 12
+        [X1,X2,X3,X4,X5,X6,X7,X8,X9,X10,X11,X12] = ndgrid(fracs,fracs,fracs,...
+        fracs,fracs,fracs,fracs,fracs,fracs,fracs,fracs,fracs);
+        X = [X1(:), X2(:),X3(:),X4(:),X5(:),X6(:),X7(:),...
+            X8(:),X9(:),X10(:),X11(:),X12(:)];
+    end
+    
+    %X = X(sum(X,2)==1,:); % only retain the rows that sum to 1
+    X = X(abs(sum(X,2)-1)<= 0.001,:); % FIX: for l = 6 this is needed
+    nonzero = sum(X~=0,2); % number of nonzero elements in each row
+    X1 = [X,nonzero];
+    % sort X1 by the number of nonzero elements
+    X1 = sortrows(X1,m+1);
+    X1(:,m+1) = [];
+    
+end
+
+
+% get_Z
+% This is a helper function for get_PWO_SLD.
+% This generates Z based on a SLD X.
+function Z = get_Z(X)
+    N = size(X,1);
+    m = size(X,2);
+    q = nchoosek(m,2); % q is the number of columns of Z
+    %Z = zeros(N,q);
+    Z = []; %initialize Z
+    for i = 1:N
+        
+        nonzero = find(X(i,:)~=0);
+        numnonzero = length(nonzero);
+        if numnonzero == 1
+           Z = [Z;zeros(1,q)];
+        else 
+            currPWO = PWOmatrix(perms(1:numnonzero));
+            zcols = zeros(1,nchoosek(numnonzero,2));
+            index = 1;
+            for j = nonzero
+                for k = nonzero
+                    if j < k
+                        zcols(index) = (j-1)*m + k - j*(j+1)/2;
+                        index = index+1;
+                    end
+                end
+            end
+            % now zcols is a collection of columns of Z that must be
+            % changed
+            newZmat = zeros(size(currPWO,1),q);
+            for col = 1:size(currPWO,2)
+                newZmat(:,zcols(col)) = currPWO(:,col);
+            end
+            Z = [Z;newZmat];
+        end
+           
+        
+    end
+end
+
+% OofA_Mix_Model_Matrix(D,m,model)
+% D: design matrix for OofA Mixture
+% m: number of mixture components
+% model: one of 'additive', 'interaction', or 'interaction2'
+function D1 = OofA_Mix_Model_Matrix(D,m,model)
+p = size(D,2);
+X = D(:,1:m);
+Z = D(:,(m+1):p);
+X1 = x2fx(X,'interaction');
+X1(:,1) = []; % remove the intercept
+if strcmp(model,'additive')
+    D1 = [X1,Z];
+end
+if strcmp(model,'interaction')
+    mc2 = nchoosek(m,2);
+    zs = zeros(m*mc2,mc2);
+    % zs = [];
+    X2 = zeros(m*mc2,m);
+    p1 = 1;
+    p2 = mc2;
+    for i = 1:m
+        % zs = [zs; eye(nchoosek(m,2))];
+        zs(p1:p2,1:mc2) = eye(mc2);
+        X2(p1:p2,i) = ones(mc2,1);
+        p1 = p1 + mc2;
+        p2 = p2 + mc2;
+    end
+    modelmat = [X2,zs];
+    Z1 = x2fx([X,Z],modelmat);
+    %Z1 = x2fx([X,Z],'interaction');
+    %Z1(:,1:(1+m+nchoosek(m,2))) = []; % remove the intercept and redundant columns
+    D1 = [X1,Z1];
+end
+if strcmp(model,'interaction2')  % this is the main effect + int model
+    Z1 = [];
+    for i = 1:m
+    index = 1;
+        for k = 1:m
+            for l = 1:m
+                if k < l
+                    if (i == k) || (i == l)
+                        Z1 = [Z1,X(:,i).*Z(:,index)];
+                    end
+                index = index+1;
+                end
+            end
+        end
+    end
+    
+    D1 = [X1,Z,Z1];
+end
+
+end
+
+% PWOmatrix.m
+% This function takes a matrix P of permutations of 1:m
+% It returns a matrix of PWO indicators, which has m choose 2 columns
+% and the same number of rows as P.
+% For full PWO design, P = perms(1:m)
+function Z = PWOmatrix(P)
+% Here, P is assumed to be a matrix of permutations
+    m = size(P,2); % number of mixture components
+    N = size(P,1); % number of rows in the design
+    if m == 2
+        Z = [-1,1]';
+        return
+    end
+    
+    Z = zeros(N,m); % initialize the matrix
+    for i = 1:N  % for each row of the PWO matrix
+        colindex = 0;
+        for j = 1:(m-1)
+            for k = (j+1):m
+                % for all pairs j < k
+                a = find(P(i,:)==j);
+                b = find(P(i,:)==k);
+                colindex = colindex + 1;
+                Z(i,colindex) = sign(b-a);
+            end 
+        end 
+    end  
+end
+
+% rel_d_eff3
+% finds the relative D efficiency of two model matricies
+% v3 update: use log then exp for numerical stability
+function d = rel_d_eff3(M1,M2)
+    k = size(M1,2);
+    n1 = size(M1,1);
+    n2 = size(M2,1);
+    %d = 100*(det(M1'*M1/n1)/det(M2'*M2/n2))^(1/k); 
+    logd = log(100)+(1/k)*(log(det(M1'*M1/n1)) - log(det(M2'*M2/n2)));
+    d = exp(logd);
+end
+
+% TA_emp_thresholds_v10b
+% m: number of mixture components
+% n: desired number of runs
+% seed: random seed
+% niter: number of iterations for the algorithm
+% Neighbors chosen based on adjacency matrix AD
+% Each point will be taken from FullD
+% tr is the sequence of thresholds
+% ASSUMES number of exchanges = 1
+% v10 change: removed redundant arguments to make this function more
+% generalizable, also used log for numerical stability
+% v10b: no longer needs m
+% also uses initial indicies0 as input
+% ALSO removed rng(seed)
+function [M, indices0] = TA_emp_thresholds_v10b(n,niter,tr,FullD,FullM,AD,indices_init)
+N = size(FullD,1); % number of rows in the full design
+M0 = FullM(indices_init,:);
+indices0 = indices_init;
+det0 = det(M0'*M0);
+C0 = inv(M0'*M0);
+for r = 1:niter
+    M1 = M0; % copy M0
+    det1 = det0; % copy the determinant
+    C1 = C0; % copy the inverse
+    row = randsample(n,1); % randomly sample 1 row
+    x = M0(row,:);
+    index = indices0(row);
+    nbrs = find(AD(index,:) == 1);
+    numnbrs = length(nbrs);
+    if(numnbrs == 1)
+        newindex = nbrs; % trivial case
+    else
+        newindex = randsample(nbrs,1); % use adj mat to find a random neighbor
+    end
+    
+    member = 1;
+    iter = 0; % counter used to determine if we should move on
+    while member
+        
+        if ismember(newindex,indices0) % try another neighbor
+            if(numnbrs == 1) % in this case, we will have to try a new row
+                % do nothing here, let the iter >= numnbrs condition kick
+                % in
+            else
+                newindex = randsample(nbrs,1); % use adj mat to find a random neighbor
+            end
+        else
+            member = 0; % exit the loop
+        end
+        
+        iter = iter + 1;
+        
+        if iter >= numnbrs % in this case, we need to try a new row
+            
+            row = randsample(n,1); % randomly sample 1 row
+            x = M0(row,:);
+            index = indices0(row);
+            nbrs = find(AD(index,:) == 1);
+            numnbrs = length(nbrs);
+            iter = 0;
+            
+            
+        end
+        
+    end
+    
+    
+    y = FullM(newindex,:); % take the new neighbor from the model matrix for full design
+    M1(row,:) = y; % update M1
+    fx = x';
+    fy = y';
+    py = fy'*C1*fy;
+    px = fx'*C1*fx;
+    pxy = fx'*C1*fy;
+    deltaxy = 1+(py-px)+(pxy^2 - py*px);
+    F1 = [fy,-fx];
+    F2 = [fy,fx];
+    %C1 = C0 - (C0*F1)/(eye(2) + F2'*C0*F1)*F2'*C0;
+    A2 = eye(2) + F2'*C1*F1;
+    I2 = 1/det(A2)*[A2(2,2),-A2(1,2);-A2(2,1),A2(1,1)];
+    % manual inversion of 2 by 2 matrix seems to work better
+    C1 = C1 - (C1*F1)*I2*F2'*C1; % update the inverse
+    %det1 = det1*deltaxy; % update the determinant
+    ldet1 = log(det1)+log(deltaxy);
+    det1 = exp(ldet1);
+    k = size(M0,2);
+    %deff1 = 100*det1^(1/k)/n;
+    %deff0 = 100*det0^(1/k)/n;
+    ldeff1 = log(100)+(1/k)*(ldet1-log(n));
+    %deff1 = exp(ldeff1);
+    ldeff0 = log(100)+(1/k)*(log(det0)-log(n));
+    deff0 = exp(ldeff0);
+    % USED LOG FOR NUMERICAL STABILITY
+    if (ldeff1 > log(deff0 - tr(r))) && (isreal(det1))
+        M0 = M1; % update the model matrix
+        det0 = det1; %update the determinant
+        C0 = C1; % update the inverse
+        indices0(row) = newindex;  % update the set of indices
+    end
+    
+end
+%cols = [1:m,(p+1):size(M0,2)];
+%D = M0(:,cols);
+M = M0;
+end
+
+% TA_emp_thresholds_v10c
+% m: number of mixture components
+% n: desired number of runs
+% seed: random seed
+% niter: number of iterations for the algorithm
+% Neighbors chosen based on adjacency matrix AD
+% Each point will be taken from FullD
+% tr is the sequence of thresholds
+% ASSUMES number of exchanges = 1
+% v10 change: removed redundant arguments to make this function more
+% generalizable, also used log for numerical stability
+% v10c: no longer uses seed
+function [M, indices0] = TA_emp_thresholds_v10c(m,n,niter,tr,FullD,FullM,AD)
+N = size(FullD,1); % number of rows in the full design
+
+% use this for now...
+p = m + nchoosek(m,2);
+%if strcmp(model,'additive')
+%   p = m + nchoosek(m,2);
+%end
+
+singular = true;
+while singular
+    indices0 = randsample(N,n)';
+    M0 = FullM(indices0,:); % initial starting design
+    if rcond(M0'*M0) > 1e-06
+        singular = false;
+    end
+end
+det0 = det(M0'*M0);
+C0 = inv(M0'*M0);
+for r = 1:niter
+    M1 = M0; % copy M0
+    det1 = det0; % copy the determinant
+    C1 = C0; % copy the inverse
+    row = randsample(n,1); % randomly sample 1 row
+    x = M0(row,:);
+    index = indices0(row);
+    nbrs = find(AD(index,:) == 1);
+    numnbrs = length(nbrs);
+    if(numnbrs == 1)
+        newindex = nbrs; % trivial case
+    else
+        newindex = randsample(nbrs,1); % use adj mat to find a random neighbor
+    end
+    
+    member = 1;
+    iter = 0; % counter used to determine if we should move on
+    while member
+        
+        if ismember(newindex,indices0) % try another neighbor
+            if(numnbrs == 1) % in this case, we will have to try a new row
+                % do nothing here, let the iter >= numnbrs condition kick
+                % in
+            else
+                newindex = randsample(nbrs,1); % use adj mat to find a random neighbor
+            end
+        else
+            member = 0; % exit the loop
+        end
+        
+        iter = iter + 1;
+        
+        if iter >= numnbrs % in this case, we need to try a new row
+            
+            row = randsample(n,1); % randomly sample 1 row
+            x = M0(row,:);
+            index = indices0(row);
+            nbrs = find(AD(index,:) == 1);
+            numnbrs = length(nbrs);
+            iter = 0;
+            
+            
+        end
+        
+    end
+    
+    
+    y = FullM(newindex,:); % take the new neighbor from the model matrix for full design
+    M1(row,:) = y; % update M1
+    fx = x';
+    fy = y';
+    py = fy'*C1*fy;
+    px = fx'*C1*fx;
+    pxy = fx'*C1*fy;
+    deltaxy = 1+(py-px)+(pxy^2 - py*px);
+    F1 = [fy,-fx];
+    F2 = [fy,fx];
+    %C1 = C0 - (C0*F1)/(eye(2) + F2'*C0*F1)*F2'*C0;
+    A2 = eye(2) + F2'*C1*F1;
+    I2 = 1/det(A2)*[A2(2,2),-A2(1,2);-A2(2,1),A2(1,1)];
+    % manual inversion of 2 by 2 matrix seems to work better
+    C1 = C1 - (C1*F1)*I2*F2'*C1; % update the inverse
+    %det1 = det1*deltaxy; % update the determinant
+    ldet1 = log(det1)+log(deltaxy);
+    det1 = exp(ldet1);
+    k = size(M0,2);
+    %deff1 = 100*det1^(1/k)/n;
+    %deff0 = 100*det0^(1/k)/n;
+    ldeff1 = log(100)+(1/k)*(ldet1-log(n));
+    %deff1 = exp(ldeff1);
+    ldeff0 = log(100)+(1/k)*(log(det0)-log(n));
+    deff0 = exp(ldeff0);
+    % USED LOG FOR NUMERICAL STABILITY
+    if (ldeff1 > log(deff0 - tr(r))) && (isreal(det1))
+        M0 = M1; % update the model matrix
+        det0 = det1; %update the determinant
+        C0 = C1; % update the inverse
+        indices0(row) = newindex;  % update the set of indices
+    end
+    
+end
+%cols = [1:m,(p+1):size(M0,2)];
+%D = M0(:,cols);
+M = M0;
+end
+
+
+
+=========================== Main Files to Run ======================================
+
+% Sec3Table3and5.m
+m = 6;
+l = 4;
+% parpool(6); % initialize the parallel pool
+model = 'additive';
+ni = 100000;
+nex = 1;
+nruns = 100;
+DF = get_PWO_SLD(m,l);
+FullM = OofA_Mix_Model_Matrix(DF,m,model); % model matrix for full design
+p = size(FullM,2);
+n = 1 + 2*p; % double point design
+disp("Share of runs");
+disp(n/size(DF,1));
+seed = 1234;
+namestr = strcat("AdjacencyMatrix","m",num2str(m),"l",num2str(l));
+AD = readmatrix(namestr);
+
+disp("read in adjacency matrix")
+
+N = size(DF,1);
+rng(seed);
+singular = true;
+indices_init = [];
+while singular
+    indices_init = randsample(N,n)';
+    M0 = FullM(indices_init,:); % initial starting design
+    if rcond(M0'*M0) > 1e-6
+        singular = false;
+    end
+end
+
+disp("found initial design")
+
+tr = find_emp_thresholds_v10(m,n,ni,DF,FullM,AD);
+%tr = find_emp_thresholds_v10b(m,n,seed,ni,DF,FullM,AD); % use for m = 8, l =5
+reldeffs = zeros(1,nruns);
+
+disp("found threshold sequence")
+
+%for i = 1:nruns % use this if not enough memory for parfor
+ parfor i = 1:nruns
+    rng(i);
+    M1 = TA_emp_thresholds_v10b(n,ni,tr,DF,FullM,AD,indices_init);
+    % M1 = TA_emp_thresholds_v10c(m,n,ni,tr,DF,FullM,AD);
+    reldeffs(i) = rel_d_eff3(M1,FullM);
+    disp(i);
+    
+ end
+
+histogram(reldeffs)
+xlabel('Relative D-efficiency')
+titlestr = append(num2str(ni),' iterations');
+title(titlestr)
+ 
+median(reldeffs) % When ni = 100000 this gives Table 5's Q50
+iqr(reldeffs) % For Table 3
+std(reldeffs) % For Table 3
+
+
+% uncomment this to save the data
+% namestr2 = strcat("reldeffs","m",num2str(m),"l",num2str(l),"niter",num2str(ni));
+% writematrix(reldeffs,namestr2);
+
+
+% Sec3Table4.m
+m = 4; % 4,5,6,7,8
+l = 3; % 3,4,5
+% parpool(6); % initialize the parallel pool
+DF = get_PWO_SLD(m,l);
+N = size(DF,1);
+%nvec = 0.3:0.1:0.9;
+nvec = 0.4:0.1:0.9;
+model = 'additive';
+ni = 100000; % number of iterations
+nex = 1; % number of exchanges
+nruns = 10; % total number of runs
+seed = 1234;
+
+meds = zeros(1,length(nvec));
+quant10s = zeros(1,length(nvec));
+
+FullM = OofA_Mix_Model_Matrix(DF,m,model); % model matrix for full design
+namestr = strcat("AdjacencyMatrix","m",num2str(m),"l",num2str(l));
+AD = readmatrix(namestr);
+%AD = get_adjacency_matrix(DF,m,l); % adjacency matrix
+
+N = size(DF,1);
+rng(seed);
+
+efficiencies = zeros(length(nvec),nruns);
+
+for j = 1:length(nvec)
+    
+    disp("n %")
+    disp(nvec(j))
+    n = ceil(nvec(j)*N);
+    tr = find_emp_thresholds_v10(m,n,ni,DF,FullM,AD);
+    singular = true;
+    indices_init = [];
+    while singular
+        indices_init = randsample(N,n)';
+        M0 = FullM(indices_init,:); % initial starting design
+        if rcond(M0'*M0) > 1e-6
+            singular = false;
+        end
+    end
+    %tr = find_emp_thresholds_v10b(m,n,seed,ni,DF,FullM,AD);
+    
+    reldeffs = zeros(1,nruns);
+    %for i = 1:nruns % use if can't run in parallel
+    parfor i = 1:nruns % for each run, run in parallel
+        rng(i);
+        M1 = TA_emp_thresholds_v10b(n,ni,tr,DF,FullM,AD,indices_init);
+        reldeffs(i) = rel_d_eff3(M1,FullM);
+        %disp(i);
+    end
+    meds(j) = quantile(reldeffs,0.5);
+    disp(meds(j));
+    quant10s(j) = quantile(reldeffs,0.1);
+    efficiencies(j,:) = reldeffs;
+end
+
+scatter(nvec*100,meds)
+xlabel("% of Full Design Rows")
+ylabel("Median Relative D-Efficiency")
+
+
+% Uncomment to save the data 
+% namestr2 = strcat("runsizemat","m",num2str(m),"l",num2str(l));
+% writematrix(efficiencies,namestr2);
+
+
+% Sec4Ex1.m
+m = 4; 
+l = 3; 
+n = 30;
+model = 'additive'; 
+% parpool(6); % initialize the parallel pool
+ni = 100000; 
+nex = 1;
+nruns = 1000;
+seed = 1234;
+DF = get_PWO_SLD(m,l);
+%if (l == 2)
+%   DF = [DF; DF]; 
+% end
+disp("Share of runs");
+disp(n/size(DF,1));
+FullM = OofA_Mix_Model_Matrix(DF,m,model); % model matrix for full design
+
+N = size(DF,1);
+rng(seed);
+singular = true;
+indices_init = [];
+while singular
+    indices_init = randsample(N,n)';
+    M0 = FullM(indices_init,:); % initial starting design
+    if rcond(M0'*M0) > 1e-6
+        singular = false;
+    end
+end
+
+
+%%% Reading in an existing adjacency matrix
+namestr = strcat("AdjacencyMatrix","m",num2str(m),"l",num2str(l));
+AD = readmatrix(namestr);
+M0 = Federov_General(m,n,seed,FullM);
+disp(rel_d_eff3(M0,FullM));
+
+tr = find_emp_thresholds_v10(m,n,ni,DF,FullM,AD);
+reldeffs = zeros(1,nruns);
+
+parfor i = 1:nruns
+    rng(i);
+    M1 = TA_emp_thresholds_v10b(n,ni,tr,DF,FullM,AD,indices_init);
+    reldeffs(i) = rel_d_eff3(M1,FullM);  
+    disp(i);
+    
+end
+% get quantiles
+quantile(reldeffs,[0.1,0.25,0.5,0.75,0.9])
+histogram(reldeffs)
+xline(rel_d_eff3(M0,FullM));
+xlabel('Relative D-efficiency')
+title('Distribution of Relative D-efficiency for TA alg')
+
+sum(reldeffs >= rel_d_eff3(M0,FullM))
+
+
+% Sec4Ex2.m
+% Extreme Vertices OofA - Find D-Optimal Design
+
+m = 4; % number of components
+n = 60; % target run size
+niter = 100000; % number of iterations
+seed = 1234; % random seed
+nruns = 1000; % number of random seeds to try
+model = 'interaction2'; % for interaction2 use 2M runs, n = 40, m = 4...
+
+EVD = readmatrix("EVD4");
+R = get_R(EVD);
+X = R*EVD;
+Z = get_Z(EVD);
+FullD = [X,Z];
+FullM = OofA_Mix_Model_Matrix(FullD,m,model);
+% Now, FullD is the list of candidate points for the design
+% Treat this as the full design
+
+% find initial design points
+N = size(FullD,1);
+singular = true;
+rng(seed);
+indices_init = [];
+while singular
+    indices_init = randsample(N,n)';
+    M0 = FullM(indices_init,:); % initial starting design
+    if rcond(M0'*M0) > 1e-6
+        singular = false;
+    end
+end
+
+% Find the optimal design from Federov
+MF = Federov_General(m,n,seed,FullM); % federov should use same points here
+rel_d_eff3(MF,FullM)
+
+% Find the adjacecy matrix based on the epsilon nbhd structure
+distmat = get_distances(EVD);
+epsilon = quantile(distmat(:),0.90);
+AD = get_adjacency_matrix_epsilon_v3(FullD,m,epsilon);
+
+% Find the empirical threshold sequence
+tr = find_emp_thresholds_v10(m,n,niter,FullD,FullM,AD);
+
+reldeffs = zeros(1,nruns);
+%reldeffs2 = reldeffs;
+rng(seed);
+seeds = ceil(rand(1,nruns)*10000);
+parfor i = 1:nruns
+    rng(i);
+    M1 = TA_emp_thresholds_v10b(n,niter,tr,FullD,FullM,AD,indices_init);
+    reldeffs(i) = rel_d_eff3(M1,FullM);
+    disp(i);
+end
+
+quantile(reldeffs,[0.1,0.25,0.5,0.75,0.9])
+histogram(reldeffs)
+xline(rel_d_eff2(MF,FullM));
+xlabel('Relative D-efficiency')
+title('Distribution of Relative D-efficiency for TA alg')
+
+
+nbhrsize = zeros(1,size(FullD,1));
+for row = 1:size(FullD,1)
+    len = length(find(AD(row,:)==1));
+    nbhrsize(row) = len;
+end
+mean(nbhrsize)
+
+sum(reldeffs >= rel_d_eff3(MF,FullM))
+

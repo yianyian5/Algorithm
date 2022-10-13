@@ -1,0 +1,45 @@
+README
+
+======= Main Files ======= 
+
+Sec3Table3and5.m --- This code produces output that was used to create Tables 3 and 5,
+as well as Figure 2.
+
+Sec3Table4.m --- This code produces output that was used to create Table 4, as well as
+Figure 3.
+
+Sec4Ex1.m --- This code produces output that was used to create Table 6 and Figure 4.
+
+Sec4Ex2.m --- This code produces output that was used to create Table 7 and Figure 5.
+
+======= Important Notes ======= 
+The files of the format AdjacencyMatrix#l#.txt are required to run the Section 3 code and
+Section 4, Example 1 (this allows for quick neighbor lookup). These can be recreated using the get_adjacency_matrix.m function.
+
+For Section 4, Example 2, the file EVD4.txt is needed.
+
+
+======= Main Functions ======= 
+
+find_emp_thresholds_v10.m --- Used to find empirical threshold sequence tr.
+Inputs: number of components m, target sample size n, number of iterations ni, full design DF, full model matrix FullM,
+adjacency matrix AD
+Returns: An empirical threshold sequence tr, of length ni, to be used in the TA algorithm.
+Alternate: find_emp_thresholds_v10b.m uses a for loop instead of parfor
+
+TA_emp_thresholds_v10b.m --- Executes the TA algorithm. 
+Inputs: target run size n, number of iterations ni, threshold sequence tr (of length ni), full design DF, 
+adjacency matrix AD, row indices of initial design inidces_init
+Returns: the model matrix of the optimal design
+
+Federov_General.m --- Executes the modified Federov algorithm.
+Inputs: number of components m, target run size n, random seed, full model matrix FullM
+Returns: the model matrix of the optimal design
+Alternate: Federov_General_v2.m allows for custom tolerance for convergence
+
+OofA_Mix_Model_Matrix.m --- Used to construct the model matrix expansion.
+Inputs: an OofA Mixture design matrix D, number of components m
+model is either 'additive' [Model 5], 'interaction' [Model 6], or 'interaction2' [Model 7]
+Returns: The model matrix expanison of D under the given OofA Mixture model
+
+
